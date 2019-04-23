@@ -6,7 +6,7 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = FALSE)
 srdb <- read.csv("data/srdb-data.csv")
 library(dplyr)
 library(tidyr)
@@ -14,49 +14,89 @@ library(ggplot2)
 theme_set(theme_bw())
 srdb %>% 
   as_tibble() %>% 
-  select(RC_annual, Leaf_habit, 
-         Q10_0_10, Q10_0_20, Q10_5_15, Q10_10_20, Q10_other1) %>%
-  rename(Q10_X_X = Q10_other1) %>% 
-  gather(Label, Q10, -RC_annual, -Leaf_habit) %>% 
-  filter(!is.na(RC_annual), !is.na(Q10)) %>% 
-  separate(Label, into = c("X", "temp_low", "temp_high")) %>% 
-  mutate(Temp_range = paste0(temp_low, "-", temp_high, " C")) ->
+  select(RC_annual, Biome, Leaf_habit, starts_with("Q10")) -> 
   srdb
+
+srdb %>% 
+  select(RC_annual, Biome, Leaf_habit, Q10_0_10, Q10_5_15, Q10_0_20, Q10_10_20) %>% 
+  gather(Label, Q10, starts_with("Q10")) ->
+  srdb_standard
+
+srdb %>% 
+  select(RC_annual, Biome, Leaf_habit, Q10 = Q10_other1, Q10_other1_temp_min, Q10_other1_temp_max) %>% 
+  mutate(Label = paste("Q10", Q10_other1_temp_min, Q10_other1_temp_max, sep = "_")) %>% 
+  select(-Q10_other1_temp_min, -Q10_other1_temp_max) ->
+  srdb_custom1
+
+srdb %>% 
+  select(RC_annual, Biome, Leaf_habit, Q10 = Q10_other2, Q10_other2_temp_min, Q10_other2_temp_max) %>% 
+  mutate(Label = paste("Q10", Q10_other2_temp_min, Q10_other2_temp_max, sep = "_")) %>% 
+  select(-Q10_other2_temp_min, -Q10_other2_temp_max) ->
+  srdb_custom2
+
+bind_rows(srdb_standard, srdb_custom1, srdb_custom2) %>% 
+  filter(!is.na(RC_annual), !is.na(Q10)) %>% 
+  separate(Label, sep = "_", into = c("X", "temp_low", "temp_high"), convert = TRUE) %>% 
+  mutate(Temp_avg = (temp_low + temp_high) / 2,
+        RC_group = cut(RC_annual, c(-0.1, 0.5, 1.0), labels = c("Heterotrophic", "Autotrophic")),
+        Leaf_habit = factor(Leaf_habit, levels = c("Deciduous", "Mixed", "Evergreen"))) ->
+  srdb_q10
 ```
 
 Still just playing around.
 
 
-```{r plot2, echo=FALSE}
-ggplot(srdb, aes(x = Q10, color = RC_annual > 0.5)) + 
-  geom_density() + 
-  facet_wrap(~Temp_range) +
-  ggtitle(paste("N =", nrow(srdb)))
+```{r plot2}
+srdb_q10 %>% 
+  group_by(RC_group) %>% 
+  summarise(Q10 = median(Q10)) -> 
+  lbls
 
-ggplot(srdb, aes(RC_annual, Q10, color = Leaf_habit)) + 
+ggplot(srdb_q10, aes(x = Q10, color = RC_group)) + 
+  geom_density(size = 1) + 
+  ggtitle(paste("N =", nrow(srdb_q10))) + 
+  geom_vline(data=lbls, aes(xintercept = Q10, color = RC_group), linetype = 2)
+
+ggplot(srdb_q10, aes(RC_annual, Q10, color = Leaf_habit)) + 
   geom_point() + 
   geom_smooth(method = "lm") +
-  facet_wrap(~Temp_range) +
-  ggtitle(paste("N =", nrow(srdb)))
+  ggtitle(paste("N =", nrow(srdb_q10)))
 
-ggplot(srdb, aes(RC_annual, Q10, color = Leaf_habit)) + 
+ggplot(srdb_q10, aes(Temp_avg, Q10)) + 
   geom_point() + 
   geom_smooth(method = "lm") +
-  ggtitle(paste("N =", nrow(srdb)))
+  facet_wrap(~Leaf_habit)
 ```
 
 And
 
 ```{r}
-srdb %>% 
-  mutate(RC_group = cut(RC_annual, 5)) %>% 
-  group_by(Leaf_habit, Temp_range, RC_group) %>% 
-  summarise(Q10 = round(mean(Q10), 2)) %>% 
-  spread(Temp_range, Q10) %>% 
+srdb_q10 %>% 
+  filter(RC_annual > 0) %>% 
+  group_by(Leaf_habit, RC_group) %>% 
+  summarise(Q10 = paste(round(median(Q10), 2), "N =", n())) %>% 
+  spread(RC_group, Q10) %>% 
   kableExtra::kable()
+```
 
-m <- lm(Q10 ~ Temp_range + Leaf_habit + RC_annual, data = srdb)
-car::Anova(m, type = "III")
-summary(m)
+Treating RC as a continuous variable:
+
+```{r}
+m1 <- lm(Q10 ~ Leaf_habit * Temp_avg * RC_annual, data = srdb_q10)
+#car::Anova(m1, type = "III")
+m1_red <- MASS::stepAIC(m1, direction = "both", trace = 0)
+car::Anova(m1_red, type = "III")
+summary(m1_red)
+```
+
+Treating RC as a group (heterotrophic and autotrohic):
+
+```{r}
+m2 <- lm(Q10 ~ Leaf_habit * Temp_avg * RC_group, data = srdb_q10)
+#car::Anova(m2, type = "III")
+m2_red <- MASS::stepAIC(m2, direction = "both", trace = 0)
+car::Anova(m2_red, type = "III")
+summary(m2_red)
+
 ```
 
